@@ -46,27 +46,28 @@ def block_add_kernel(
     x = tl.load(x_ptr + offsets, mask=mask)
     cum_block_sum = tl.load(cum_block_sum_ptr + pid - 1, mask=pid != 0)
     out = x + cum_block_sum
-    # tl.device_print("out", out)
     tl.store(out_ptr + offsets, out, mask=mask)
 
 
 def scan(x: t.Tensor):
-    cumsum_intermediate = t.empty_like(x).cuda()
-    n = cumsum_intermediate.numel()
+    n = x.numel()
     BLOCK_SIZE = 16
     n_blocks = triton.cdiv(n, BLOCK_SIZE)
-    block_sums = t.empty(n_blocks, dtype=x.dtype, device=x.device)
+    assert n_blocks < BLOCK_SIZE
     grid = lambda meta: (triton.cdiv(n, meta["BLOCK_SIZE"]),)
+
+    cumsum_intermediate = t.empty_like(x).cuda()
+    block_sums = t.empty(n_blocks, dtype=x.dtype, device=x.device)
     sequential_scan_kernel[grid](x, cumsum_intermediate, block_sums, n, BLOCK_SIZE=BLOCK_SIZE)
 
-    assert n_blocks < BLOCK_SIZE
     cum_block_sums = t.empty_like(block_sums).cuda()
     garbage = t.empty(n_blocks).cuda()
     sequential_scan_kernel[grid](block_sums, cum_block_sums, garbage, n_blocks, BLOCK_SIZE=BLOCK_SIZE)
     del garbage
-    out = t.zeros_like(cumsum_intermediate).cuda()
-    block_add_kernel[grid](cumsum_intermediate, cum_block_sums, out, n, BLOCK_SIZE=BLOCK_SIZE)
-    return out
+
+    cumsum_out = t.zeros_like(cumsum_intermediate).cuda()
+    block_add_kernel[grid](cumsum_intermediate, cum_block_sums, cumsum_out, n, BLOCK_SIZE=BLOCK_SIZE)
+    return cumsum_out
 
 inp = t.randint(0, 10000, size=(100,)).cuda()
 outp = scan(inp)
